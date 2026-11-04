@@ -4,7 +4,7 @@
 
 Simple `bash` script to generate passwords using `dd`, `/dev/urandom`, `dc`, `printf`, `echo -e`, `bc`, `hexdump` and some other tricks.
 
-The core principle is to convert a random binary number to representation in base 96, then adding 32 (the ASCII value of white space) and then finally converting back the the whole range between ASCII 32 to ASCII 127 to reach the final password.
+The core principle is to convert a random binary number to representation in base 95, then adding 32 (the ASCII value of white space) and then finally converting back the the whole range between ASCII 32 to ASCII 126 to reach the final password.
 
 
 ## expenses_fixed_grocery_others.fish
@@ -28,3 +28,12 @@ The algorithm is still available (2 different versions) in commented code sectio
 This is not a "clean code", in the sense that many of the struggles are present as commented code and/or undocumented branches (`main_0` and `main_2`).
 
 Uses [fish shell](https://fishshell.com/) and [SQLite](https://sqlite.org/).
+
+
+## ascii_table.rs + ascii_table.rs.wrapper.sh
+
+Just prints the ASCII table, from white space to tilde.
+
+Uses rust and a shell wrapper to build the rust source on demand.
+
+Helped to figure out a failure in [generate_password.bash](#generate-password-bash).
