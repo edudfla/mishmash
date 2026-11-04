@@ -36,4 +36,4 @@ Just prints the ASCII table, from white space to tilde.
 
 Uses rust and a shell wrapper to build the rust source on demand.
 
-Helped to figure out a failure in [generate_password.bash](#generate_password.bash).
+Helped to figure out a failure in [generate_password.bash](#generate_passwordbash).
