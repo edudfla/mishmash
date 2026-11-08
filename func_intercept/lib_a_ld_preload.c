@@ -298,7 +298,8 @@ static function_profile_intercept_t intercepted_functions[] = {
     {1, NULL, NULL, {}, {}, "lib_a_func_b"},
     {2, NULL, NULL, {}, {}, "lib_a_func_c"},
     {3, NULL, NULL, {}, {}, "lib_a_func_d"},
-    {4, NULL, NULL, {}, {}, "_ZNK17lib_a_cpp_class_b10usec_sleepEm"},
+    {4, NULL, NULL, {}, {}, "_ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm"},
+    {5, NULL, NULL, {}, {}, "_ZNK17lib_a_cpp_class_b20usec_sleep_reentrantEm"},
     {-1, NULL, NULL, {}, {}, ""}
 };
 //
@@ -453,10 +454,11 @@ void function_interceptor()
         (unsigned long)
         ((active_fpi->last_exit_ts.tv_sec * 1000000000 + active_fpi->last_exit_ts.tv_nsec) -
         (active_fpi->last_entry_ts.tv_sec * 1000000000 + active_fpi->last_entry_ts.tv_nsec));
-    printf("%d %s %lu\n",
-        active_fpi->function_index,
-        active_fpi->function_name,
-        duration);
+    // printf("%d %s %lu\n",
+    //    active_fpi->function_index,
+    //    active_fpi->function_name,
+    //    duration);
+    printf("%lu", duration);
     //
     // stop the profiling
     // active_fpi needs to be set back to NULL
@@ -535,7 +537,7 @@ void lib_a_func_d()
     );
 }
 //------------------------------------------------------------------------------
-void _ZNK17lib_a_cpp_class_b10usec_sleepEm()
+void _ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm()
 {
     ISR_LIKE_SAVE_STATE;
     asm (
@@ -543,6 +545,18 @@ void _ZNK17lib_a_cpp_class_b10usec_sleepEm()
         "\tjmp *%1\n"
         :
         : "n" (4)
+        , "r" (function_interceptor)
+    );
+}
+//------------------------------------------------------------------------------
+void _ZNK17lib_a_cpp_class_b20usec_sleep_reentrantEm()
+{
+    ISR_LIKE_SAVE_STATE;
+    asm (
+        "\tmov %0,%%rbx\n"
+        "\tjmp *%1\n"
+        :
+        : "n" (5)
         , "r" (function_interceptor)
     );
 }
