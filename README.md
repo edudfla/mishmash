@@ -37,3 +37,61 @@ Just prints the ASCII table, from white space to tilde.
 Uses rust and a shell wrapper to build the rust source on demand.
 
 Helped to figure out a failure in [generate_password.bash](#generate_passwordbash).
+
+
+## The case of misaligned stack pointer causing **SIGSEGV (Address boundary error)**
+
+During the tests to create a fairly generic interceptor to allow profile of shared object functions, it was seen that after some pushes to the stack through `asm` a call to `dlsym` was unexpectedly failing with `SIGSEGV (Address boundary error)`.
+
+After some search it was seen that the failure was being triggered in line 233 of `dl-catch.c` (glibc-2.43, Ubuntu).
+
+The line where the failure was triggered was a single assignment:
+```c
+  c.errcode = &errcode;
+```
+
+After many iterations it was figured out that the exception happened when the address of variable `c` was not an integer multiple of 16 (not ending in `0` in hexadecimal representation).
+
+The smallest code possible I have found where the failure could be reproduced is:
+
+```c
+#define _GNU_SOURCE 1
+#include <dlfcn.h>
+
+int main()
+{
+    asm volatile (
+        "\tpush %%rax\n"
+        :
+    );
+    void* lib_handle = dlopen("/usr/lib/gcc/x86_64-linux-gnu/15/libatomic.so", RTLD_NOW);
+    asm volatile (
+        "\tpop %%rax\n"
+        :
+    );
+    return 0;
+}
+```
+
+Adding an extra `push` made the failure disappear:
+
+```c
+#define _GNU_SOURCE 1
+#include <dlfcn.h>
+
+int main()
+{
+    asm volatile (
+        "\tpush %%rax\n"
+        "\tpush %%rbx\n"
+        :
+    );
+    void* lib_handle = dlopen("/usr/lib/gcc/x86_64-linux-gnu/15/libatomic.so", RTLD_NOW);
+    asm volatile (
+        "\tpop %%rbx\n"
+        "\tpop %%rax\n"
+        :
+    );
+    return 0;
+}
+```
