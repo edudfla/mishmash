@@ -6,7 +6,7 @@ set -lx PATH "$bin_dir:$PATH"
 set -lx LD_PRELOAD $bin_dir/liblib_a_ld_preload.so
 #gdb --args main
 string repeat -n 80 "="
-main
+# main
 string repeat -n 80 "="
-main_cpp
+gdb main_cpp
 string repeat -n 80 "="

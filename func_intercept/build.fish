@@ -4,15 +4,19 @@ pushd (path dirname (readlink -f (status filename)))
 set dest_dir ~/bin/lib_a_bin
 test -d $dest_dir
     or mkdir $dest_dir
+set -l lib_flags -O0 -ggdb -fPIC -shared
+set -l exe_flags -O0 -ggdb
+# set -l lib_flags -fPIC -shared
+# set -l exe_flags 
 echo A
-gcc -O0 -ggdb -fPIC -shared lib_a.c -o $dest_dir/liblib_a.so
+gcc $lib_flags lib_a.c -o $dest_dir/liblib_a.so
 echo B
-gcc -O0 -ggdb main.c -o $dest_dir/main -llib_a -L$dest_dir
+gcc $exe_flags main.c -o $dest_dir/main -llib_a -L$dest_dir
 echo C
-gcc -O0 -ggdb -fPIC -shared lib_a_ld_preload.c -o $dest_dir/liblib_a_ld_preload.so
+gcc $lib_flags lib_a_ld_preload.c -o $dest_dir/liblib_a_ld_preload.so
 echo D
-g++ -O0 -ggdb -fPIC -shared lib_b.cpp -o $dest_dir/liblib_a_cpp.so -llib_a -L$dest_dir
+g++ $lib_flags lib_b.cpp -o $dest_dir/liblib_a_cpp.so -llib_a -L$dest_dir
 echo E
-g++ -O0 -ggdb main.cpp -o $dest_dir/main_cpp -llib_a -llib_a_cpp -L$dest_dir
+g++ $exe_flags main.cpp -o $dest_dir/main_cpp -llib_a -llib_a_cpp -L$dest_dir
 echo F
 popd
