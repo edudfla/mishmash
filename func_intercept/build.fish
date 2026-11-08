@@ -11,4 +11,8 @@ gcc -O0 -ggdb main.c -o $dest_dir/main -llib_a -L$dest_dir
 echo C
 gcc -O0 -ggdb -fPIC -shared lib_a_ld_preload.c -o $dest_dir/liblib_a_ld_preload.so
 echo D
+g++ -O0 -ggdb -fPIC -shared lib_b.cpp -o $dest_dir/liblib_a_cpp.so -llib_a -L$dest_dir
+echo E
+g++ -O0 -ggdb main.cpp -o $dest_dir/main_cpp -llib_a -llib_a_cpp -L$dest_dir
+echo F
 popd

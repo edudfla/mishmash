@@ -177,7 +177,7 @@ unsigned long lib_a_func_c_duration_nsec()
         "\tpop %%rdi\n" \
         : \
     )
-unsigned long lib_a_func_d()
+void lib_a_func_d()
 {
     static void* actual_return_address_func_d = NULL;
     static void* lib_a_func_d_target = NULL;
@@ -192,6 +192,54 @@ unsigned long lib_a_func_d()
                          // the SIGSEGV was because an odd number of pushes was being done in macro ISR_LIKE_SAVE_STATE.
     if (NULL == lib_a_func_d_target) {
         lib_a_func_d_target = dlsym(RTLD_NEXT, "lib_a_func_d");
+    }
+    if (NULL != lib_a_func_d_target) {
+        asm volatile (
+            "\tmov 8(%%rbp),%0\n" // saves the original return adddress.
+            : "=r" (actual_return_address_func_d)
+        );
+        clock_gettime(CLOCK_MONOTONIC, &lib_a_func_d_entry_timespec);
+        ISR_LIKE_RESTORE_STATE;
+        asm volatile (
+            "\tpop %%rbp\n"
+            "\tadd $8,%%rsp\n" // rewind the stack to the point where the original call was performed
+            "\tcall *%0\n"     // calls the original function
+            :
+            : "r" (lib_a_func_d_target)
+        );
+        ISR_LIKE_SAVE_STATE;
+        clock_gettime(CLOCK_MONOTONIC, &lib_a_func_d_exit_timespec);
+        printf("%lu\n",
+            (lib_a_func_d_exit_timespec.tv_sec * 1000000000 + lib_a_func_d_exit_timespec.tv_nsec) -
+            (lib_a_func_d_entry_timespec.tv_sec * 1000000000 + lib_a_func_d_entry_timespec.tv_nsec));
+        ISR_LIKE_RESTORE_STATE;
+        asm volatile (
+            "\tjmp *%0\n" // terminates the interception
+            :
+            : "m" (actual_return_address_func_d) // the "m" is important.
+                                                 // lib_a_func_d returns in rax.
+                                                 // when using "r", register rax was being overwritten and the return value was being lost.
+        );
+    } else {
+        // What to do if the intercepted original function is not found?
+    }
+}
+//------------------------------------------------------------------------------
+void _ZNK17lib_a_cpp_class_b10usec_sleepEm()
+{
+    static void* actual_return_address_func_d = NULL;
+    static void* lib_a_func_d_target = NULL;
+    static struct timespec lib_a_func_d_entry_timespec = {};
+    static struct timespec lib_a_func_d_exit_timespec = {};
+    ISR_LIKE_SAVE_STATE; // how come this is interfering with dlsym?
+                         // why adding even a single push instruction here causes dlsym to SIGSEGV?
+                         // changing (sub) the rsp also causes weird issues.
+                         // what is going on here?
+                         // issue solved.
+                         // the stack pointer shall be an integer multiple of 16.
+                         // the SIGSEGV was because an odd number of pushes was being done in macro ISR_LIKE_SAVE_STATE.
+    if (NULL == lib_a_func_d_target) {
+        lib_a_func_d_target = dlsym(RTLD_NEXT, "_ZNK17lib_a_cpp_class_b10usec_sleepEm");
     }
     if (NULL != lib_a_func_d_target) {
         asm volatile (
