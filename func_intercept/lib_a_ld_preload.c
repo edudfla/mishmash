@@ -366,7 +366,7 @@ static void* jump_or_return_address_scratch_pad;
 void function_interceptor()
 {
     register uint64_t function_index;
-    asm (
+    asm volatile (
         "\tmov %%rbx,%0\n"
         : "=r" (function_index)
     );
@@ -376,7 +376,7 @@ void function_interceptor()
         // ensures that rsp is 16 byte aligned.
         // this is to avoid SIGSEGV in dlsym
         //
-        asm (
+        asm volatile (
             "\tmov $0x0,%%rax\n"
             "\tmov $0x8,%%rbx\n"
             "\ttest $0xf,%%rsp\n"
@@ -402,14 +402,14 @@ void function_interceptor()
         //
         // needs to discard the dangling frame pointer because arrived here through jump.
         //
-        asm (
+        asm volatile (
             "\tmov %%rbp,%%rsp\n"
             "\tpop %%rbp\n"
             :
         );
         jump_or_return_address_scratch_pad = other_fpi->function_target;
         ISR_LIKE_RESTORE_STATE;
-        asm (
+        asm volatile (
             "\tmov %%rbp,%%rsp\n"
             "\tpop %%rbp\n"
             "\tjmp *%0\n"
@@ -423,7 +423,7 @@ void function_interceptor()
     // the following assignment is the "lock" checked to detect reentrant calls.
     // this code supports single threaded processes only.
     //
-    asm (
+    asm volatile (
         "\tmov %%rbp,%%rax\n"
         "\tmov (%%rax),%%rax\n"
         "\tmov 8(%%rax),%0\n" // saves the original return adddress.
@@ -434,7 +434,7 @@ void function_interceptor()
     //
     // needs to discard the dangling frame pointer because arrived here through jump.
     //
-    asm (
+    asm volatile (
         "\tmov %%rbp,%%rsp\n"
         "\tpop %%rbp\n"
         :
@@ -443,6 +443,9 @@ void function_interceptor()
     asm volatile (
         "\tmov %%rbp,%%rsp\n"
         "\tpop %%rbp\n"
+        //
+        // the frame pointer is not available anymore from here on.
+        //
         "\tadd $8,%%rsp\n" // rewind the stack to the point where the original call was performed
         "\tcall *%0\n"     // calls the original function
         :
@@ -450,7 +453,10 @@ void function_interceptor()
     );
     ISR_LIKE_SAVE_STATE;
     clock_gettime(CLOCK_MONOTONIC, &(active_fpi->last_exit_ts));
-    unsigned long duration =
+    //
+    // needs to be register to avoid changing the stack.
+    //
+    register unsigned long duration =
         (unsigned long)
         ((active_fpi->last_exit_ts.tv_sec * 1000000000 + active_fpi->last_exit_ts.tv_nsec) -
         (active_fpi->last_entry_ts.tv_sec * 1000000000 + active_fpi->last_entry_ts.tv_nsec));
@@ -492,7 +498,7 @@ void lib_a_func_a()
                          // issue solved.
                          // the stack pointer shall be an integer multiple of 16.
                          // the SIGSEGV was because an odd number of pushes was being done in macro ISR_LIKE_SAVE_STATE.
-    asm (
+    asm volatile (
         "\tmov %0,%%rbx\n"
         "\tjmp *%1\n"
         :
@@ -504,7 +510,7 @@ void lib_a_func_a()
 void lib_a_func_b()
 {
     ISR_LIKE_SAVE_STATE;
-    asm (
+    asm volatile (
         "\tmov %0,%%rbx\n"
         "\tjmp *%1\n"
         :
@@ -516,7 +522,7 @@ void lib_a_func_b()
 void lib_a_func_c()
 {
     ISR_LIKE_SAVE_STATE;
-    asm (
+    asm volatile (
         "\tmov %0,%%rbx\n"
         "\tjmp *%1\n"
         :
@@ -528,7 +534,7 @@ void lib_a_func_c()
 void lib_a_func_d()
 {
     ISR_LIKE_SAVE_STATE;
-    asm (
+    asm volatile (
         "\tmov %0,%%rbx\n"
         "\tjmp *%1\n"
         :
@@ -540,7 +546,7 @@ void lib_a_func_d()
 void _ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm()
 {
     ISR_LIKE_SAVE_STATE;
-    asm (
+    asm volatile (
         "\tmov %0,%%rbx\n"
         "\tjmp *%1\n"
         :
@@ -552,7 +558,7 @@ void _ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm()
 void _ZNK17lib_a_cpp_class_b20usec_sleep_reentrantEm()
 {
     ISR_LIKE_SAVE_STATE;
-    asm (
+    asm volatile (
         "\tmov %0,%%rbx\n"
         "\tjmp *%1\n"
         :

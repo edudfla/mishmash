@@ -6,14 +6,14 @@ test -d $dest_dir
     or mkdir $dest_dir
 set -l lib_flags -O0 -ggdb -fPIC -shared
 set -l exe_flags -O0 -ggdb
-# set -l lib_flags -fPIC -shared
-# set -l exe_flags 
+set -l lib_flags -fPIC -shared
+set -l exe_flags 
 #echo A
 gcc $lib_flags lib_a.c -o $dest_dir/liblib_a.so
 #echo B
 gcc $exe_flags main.c -o $dest_dir/main -llib_a -L$dest_dir
 #echo C
-gcc $lib_flags lib_a_ld_preload.c -o $dest_dir/liblib_a_ld_preload.so
+gcc $lib_flags lib_a_ld_preload.c -ldl -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -o $dest_dir/liblib_a_ld_preload.so
 #echo D
 g++ $lib_flags lib_b.cpp -o $dest_dir/liblib_a_cpp.so -llib_a -L$dest_dir
 #echo E

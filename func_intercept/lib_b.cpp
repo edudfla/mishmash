@@ -16,6 +16,6 @@ unsigned long lib_a_cpp_class_b::usec_sleep_inline(unsigned long usec_sleep_inte
 unsigned long lib_a_cpp_class_b::usec_sleep_reentrant(unsigned long usec_sleep_interval) const
 {
     auto result = lib_a_func_d(usec_sleep_interval);
-    std::cout << "lib_a_cpp_class_b::usec_sleep_reentrant is about to return " << result << std::endl;
+    // std::cout << "lib_a_cpp_class_b::usec_sleep_reentrant is about to return " << result << std::endl;
     return result;
 }

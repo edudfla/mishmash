@@ -37,6 +37,6 @@ unsigned long lib_a_func_d(unsigned long usleep_duration)
     struct timespec b;
     clock_gettime(CLOCK_MONOTONIC, &b);
     unsigned long result = (unsigned long)((b.tv_sec * 1000000000 + b.tv_nsec) - (a.tv_sec * 1000000000 + a.tv_nsec));
-    printf("lib_a_func_d is about to return %lu.\n", result);
+    // printf("lib_a_func_d is about to return %lu.\n", result);
     return result;
 }
