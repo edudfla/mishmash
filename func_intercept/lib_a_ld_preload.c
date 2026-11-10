@@ -2,10 +2,15 @@
 #   define _GNU_SOURCE
 #endif
 #include <dlfcn.h>
+#include <errno.h>
 #include <stddef.h>
-#include <stdio.h>
-#include <time.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+// extern char *program_invocation_name;
+extern char *program_invocation_short_name;
 #if 0
 //------------------------------------------------------------------------------
 void lib_a_func_a()
@@ -643,6 +648,7 @@ static void* jump_or_return_address_scratch_pad;
         : \
         : "i" (ISR_LIKE_STATE_LENGTH) \
     )
+FILE* csv;
 //------------------------------------------------------------------------------
 void __attribute__ ((constructor)) setup_lib_a_ld_preload()
 {
@@ -651,6 +657,11 @@ void __attribute__ ((constructor)) setup_lib_a_ld_preload()
         fpi->function_target = dlsym(RTLD_NEXT, fpi->function_name);
         ++ fpi;
     }
+    char csv_path[1024];
+    pid_t pid = getpid();
+    snprintf(csv_path, 1024, "/tmp/lib_a_ld_preload-%s-%d-XXXXXX.csv", program_invocation_short_name, pid);
+    mkstemps(csv_path, 4);
+    csv = fopen(csv_path, "w");
 }
 //------------------------------------------------------------------------------
 //
@@ -705,7 +716,7 @@ void function_interceptor()
         : "=p" (jump_or_return_address_scratch_pad)
     );
     active_fpi->actual_return_address = jump_or_return_address_scratch_pad;
-    clock_gettime(CLOCK_MONOTONIC, &(active_fpi->last_entry_ts));
+    clock_gettime(CLOCK_REALTIME, &(active_fpi->last_entry_ts));
     //
     // needs to discard the dangling frame pointer because arrived here through jump.
     //
@@ -727,19 +738,11 @@ void function_interceptor()
         : "m" (active_fpi->function_target)
     );
     ISR_LIKE_SAVE_STATE;
-    clock_gettime(CLOCK_MONOTONIC, &(active_fpi->last_exit_ts));
-    //
-    // needs to be register to avoid changing the stack.
-    //
-    register unsigned long duration =
-        (unsigned long)
-        ((active_fpi->last_exit_ts.tv_sec * 1000000000 + active_fpi->last_exit_ts.tv_nsec) -
-        (active_fpi->last_entry_ts.tv_sec * 1000000000 + active_fpi->last_entry_ts.tv_nsec));
-    // printf("%d %s %lu\n",
-    //    active_fpi->function_index,
-    //    active_fpi->function_name,
-    //    duration);
-    printf("%lu", duration);
+    clock_gettime(CLOCK_REALTIME, &(active_fpi->last_exit_ts));
+    fprintf(csv, "%d,%lu%09lu,%lu%09lu\n",
+        active_fpi->function_index,
+        active_fpi->last_entry_ts.tv_sec, active_fpi->last_entry_ts.tv_nsec,
+        active_fpi->last_exit_ts.tv_sec, active_fpi->last_exit_ts.tv_nsec);
     //
     // stop the profiling
     // active_fpi needs to be set back to NULL
