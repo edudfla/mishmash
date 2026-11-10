@@ -4,8 +4,8 @@ pushd (path dirname (readlink -f (status filename)))
 set dest_dir ~/bin/lib_a_bin
 test -d $dest_dir
     or mkdir $dest_dir
-set -l lib_flags -O0 -ggdb -fPIC -shared
-set -l exe_flags -O0 -ggdb
+#set -l lib_flags -O0 -ggdb -fPIC -shared
+#set -l exe_flags -O0 -ggdb
 set -l lib_flags -fPIC -shared
 set -l exe_flags 
 #echo A

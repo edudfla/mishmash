@@ -279,6 +279,7 @@ void _ZNK17lib_a_cpp_class_b10usec_sleepEm()
     }
 }
 #endif
+#if 0
 //------------------------------------------------------------------------------
 typedef struct {
     int function_index;
@@ -565,5 +566,239 @@ void _ZNK17lib_a_cpp_class_b20usec_sleep_reentrantEm()
         : "n" (5)
         , "r" (function_interceptor)
     );
+}
+//------------------------------------------------------------------------------
+#endif
+//------------------------------------------------------------------------------
+typedef struct {
+    int function_index;
+    void* function_target;
+    void* actual_return_address;
+    struct timespec last_entry_ts;
+    struct timespec last_exit_ts;
+    const char * function_name;
+} function_profile_intercept_t;
+//------------------------------------------------------------------------------
+//
+// the static variables intercepted_functions, active_fpi, and other_fpi could
+// be moved to the scope of function_interceptor.
+//
+static function_profile_intercept_t intercepted_functions[] = {
+    {1, NULL, NULL, {}, {}, "lib_a_func_a"},
+    {2, NULL, NULL, {}, {}, "lib_a_func_b"},
+    {3, NULL, NULL, {}, {}, "lib_a_func_c"},
+    {4, NULL, NULL, {}, {}, "lib_a_func_d"},
+    {5, NULL, NULL, {}, {}, "_ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm"},
+    {6, NULL, NULL, {}, {}, "_ZNK17lib_a_cpp_class_b20usec_sleep_reentrantEm"},
+    {0, NULL, NULL, {}, {}, ""}
+};
+//
+// this code **IS NOT** thread safe
+//
+static function_profile_intercept_t* active_fpi = NULL;
+static function_profile_intercept_t* other_fpi = NULL;
+static void* jump_or_return_address_scratch_pad;
+//------------------------------------------------------------------------------
+//
+// During tests it was seen the exception like:
+// Program received signal SIGSEGV, Segmentation fault.
+// 0x00007ffff7fc24ba in __GI__dl_catch_exception (exception=exception@entry=0x7fffffffd778, 
+//     operate=0x7ffff7e64995 <dlopen_doit>, args=0x7fffffffd818) at ./elf/dl-catch.c:233
+// The reason seems to be that the stack pointer gets misaligned.
+// For the exception disappear an extra push has to be added.
+// Apparently the stack pointer has to be an integer multiple of 16.
+// Then rdx was pushed.
+//
+// Inspired in SAVE_ARGS_IRQ
+//
+// keep it always even!!!
+//
+#define ISR_LIKE_STATE_LENGTH (10 * 8)
+#define ISR_LIKE_SAVE_STATE \
+    asm volatile ( \
+        "\tpush %%rdi\n" \
+        "\tpush %%rsi\n" \
+        "\tpush %%rdx\n" \
+        "\tpush %%rcx\n" \
+        "\tpush %%rbx\n" \
+        "\tpush %%rax\n" \
+        "\tpush %%r8\n" \
+        "\tpush %%r9\n" \
+        "\tpush %%r10\n" \
+        "\tpush %%r11\n" \
+        : \
+    )
+#define ISR_LIKE_RESTORE_STATE \
+    asm volatile ( \
+        "\tpop %%r11\n" \
+        "\tpop %%r10\n" \
+        "\tpop %%r9\n" \
+        "\tpop %%r8\n" \
+        "\tpop %%rax\n" \
+        "\tpop %%rbx\n" \
+        "\tpop %%rcx\n" \
+        "\tpop %%rdx\n" \
+        "\tpop %%rsi\n" \
+        "\tpop %%rdi\n" \
+        : \
+        : "i" (ISR_LIKE_STATE_LENGTH) \
+    )
+//------------------------------------------------------------------------------
+void __attribute__ ((constructor)) setup_lib_a_ld_preload()
+{
+    function_profile_intercept_t* fpi = &(intercepted_functions[0]);
+    while (fpi->function_index != 0) {
+        fpi->function_target = dlsym(RTLD_NEXT, fpi->function_name);
+        ++ fpi;
+    }
+}
+//------------------------------------------------------------------------------
+//
+// Possible regex to list the C++ functions:
+// > objdump -T ~/bin/lib_a_bin/liblib_a_cpp.so | rg -e '(?-u) g    DF .text\t'
+//
+// function_interceptor is never called directly.
+// instead the interceptors jump to it.
+// the context is preserved with the return addres and the frame pointer.
+// the stack is kept untouched to allow the transparent interception.
+//
+void function_interceptor()
+{
+    //
+    // other_fpi was set by the entry point of the intercepting function.
+    // other_fpi->function_target was set by setup_lib_a_ld_preload.
+    //
+    // check if there is no other active call
+    //
+    if (NULL != active_fpi) {
+        //
+        // reentrant call
+        //
+        //
+        // needs to discard the dangling frame pointer because arrived here through jump.
+        //
+        asm volatile (
+            "\tmov %%rbp,%%rsp\n"
+            "\tpop %%rbp\n"
+            :
+        );
+        jump_or_return_address_scratch_pad = other_fpi->function_target;
+        ISR_LIKE_RESTORE_STATE;
+        asm volatile (
+            "\tmov %%rbp,%%rsp\n"
+            "\tpop %%rbp\n"
+            "\tjmp *%0\n"
+            :
+            : "m" (jump_or_return_address_scratch_pad)
+        );
+    }
+    active_fpi = other_fpi;
+    //
+    // start the profiling.
+    // the following assignment is the "lock" checked to detect reentrant calls.
+    // this code supports single threaded processes only.
+    //
+    asm volatile (
+        "\tmov %%rbp,%%rax\n"
+        "\tmov (%%rax),%%rax\n"
+        "\tmov 8(%%rax),%0\n" // saves the original return adddress.
+        : "=p" (jump_or_return_address_scratch_pad)
+    );
+    active_fpi->actual_return_address = jump_or_return_address_scratch_pad;
+    clock_gettime(CLOCK_MONOTONIC, &(active_fpi->last_entry_ts));
+    //
+    // needs to discard the dangling frame pointer because arrived here through jump.
+    //
+    asm volatile (
+        "\tmov %%rbp,%%rsp\n"
+        "\tpop %%rbp\n"
+        :
+    );
+    ISR_LIKE_RESTORE_STATE;
+    asm volatile (
+        "\tmov %%rbp,%%rsp\n"
+        "\tpop %%rbp\n"
+        //
+        // the frame pointer is not available anymore from here on.
+        //
+        "\tadd $8,%%rsp\n" // rewind the stack to the point where the original call was performed
+        "\tcall *%0\n"     // calls the original function
+        :
+        : "m" (active_fpi->function_target)
+    );
+    ISR_LIKE_SAVE_STATE;
+    clock_gettime(CLOCK_MONOTONIC, &(active_fpi->last_exit_ts));
+    //
+    // needs to be register to avoid changing the stack.
+    //
+    register unsigned long duration =
+        (unsigned long)
+        ((active_fpi->last_exit_ts.tv_sec * 1000000000 + active_fpi->last_exit_ts.tv_nsec) -
+        (active_fpi->last_entry_ts.tv_sec * 1000000000 + active_fpi->last_entry_ts.tv_nsec));
+    // printf("%d %s %lu\n",
+    //    active_fpi->function_index,
+    //    active_fpi->function_name,
+    //    duration);
+    printf("%lu", duration);
+    //
+    // stop the profiling
+    // active_fpi needs to be set back to NULL
+    //
+    jump_or_return_address_scratch_pad = active_fpi->actual_return_address;
+    active_fpi = NULL;
+    ISR_LIKE_RESTORE_STATE;
+    asm volatile (
+        "\tjmp *%0\n" // terminates the interception
+        :
+        : "m" (jump_or_return_address_scratch_pad)  // the "m" is important.
+                                                    // lib_a_func_d returns in rax.
+                                                    // when using "r", register rax was being overwritten and the return value was being lost.
+                                                    // the usage if static global variable jump_or_return_address_scratch_pad preservers the return value
+                                                    // when the field actual_return_address was in use the register with the return value was overwritten because of the multiple indirections needed to fetch the final jump value
+    );
+}
+//------------------------------------------------------------------------------
+//
+// this is screming for a macro.
+// keep like that for now.
+// a macro would make debugging harder.
+// in the end the code will be generated anyway.
+//
+#define JUMP_TO_GENERIC_INTERCEPTOR(function_index_in_table) \
+    ISR_LIKE_SAVE_STATE; \
+    other_fpi = &(intercepted_functions[function_index_in_table]); \
+    asm volatile ( \
+        "\tjmp *%0\n" \
+        : \
+        : "p" (function_interceptor) \
+    )
+void lib_a_func_a()
+{
+    JUMP_TO_GENERIC_INTERCEPTOR(0);
+}
+//------------------------------------------------------------------------------
+void lib_a_func_b()
+{
+    JUMP_TO_GENERIC_INTERCEPTOR(1);
+}
+//------------------------------------------------------------------------------
+void lib_a_func_c()
+{
+    JUMP_TO_GENERIC_INTERCEPTOR(2);
+}
+//------------------------------------------------------------------------------
+void lib_a_func_d()
+{
+    JUMP_TO_GENERIC_INTERCEPTOR(3);
+}
+//------------------------------------------------------------------------------
+void _ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm()
+{
+    JUMP_TO_GENERIC_INTERCEPTOR(4);
+}
+//------------------------------------------------------------------------------
+void _ZNK17lib_a_cpp_class_b20usec_sleep_reentrantEm()
+{
+    JUMP_TO_GENERIC_INTERCEPTOR(5);
 }
 //------------------------------------------------------------------------------
