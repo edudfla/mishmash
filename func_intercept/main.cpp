@@ -58,6 +58,19 @@ int main()
     );
     for (i = 0; i < 100; ++ i) {
         std::cout << i;
+        asm volatile (
+            "\tmov $0xf1,%%rdi\n"
+            "\tmov $0xf02,%%rsi\n"
+            "\tmov $0xf003,%%rdx\n"
+            "\tmov $0xf0004,%%rcx\n"
+            "\tmov $0xf00005,%%rbx\n"
+            "\tmov $0xf000006,%%rax\n"
+            "\tmov $0xf0000007,%%r8\n"
+            "\tmov $0xf00000008,%%r9\n"
+            "\tmov $0xf000000009,%%r10\n"
+            "\tmov $0xf000000000a,%%r11\n"
+            :
+        );
         clock_gettime(CLOCK_REALTIME, &t_i);
         auto ns_duration_cpp_inline = object_a->usec_sleep_inline(sleep_time);
         clock_gettime(CLOCK_REALTIME, &t_f);

@@ -3,6 +3,7 @@
 #endif
 #include <dlfcn.h>
 #include <errno.h>
+#include <link.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -329,7 +330,6 @@ static void* jump_or_return_address_scratch_pad;
 //
 // keep it always even!!!
 //
-#define ISR_LIKE_STATE_LENGTH (10 * 8)
 #define ISR_LIKE_SAVE_STATE \
     asm volatile ( \
         "\tpush %%rdi\n" \
@@ -357,7 +357,6 @@ static void* jump_or_return_address_scratch_pad;
         "\tpop %%rsi\n" \
         "\tpop %%rdi\n" \
         : \
-        : "i" (ISR_LIKE_STATE_LENGTH) \
     )
 //------------------------------------------------------------------------------
 //
@@ -595,6 +594,7 @@ static function_profile_intercept_t intercepted_functions[] = {
     {4, NULL, NULL, {}, {}, "lib_a_func_d"},
     {5, NULL, NULL, {}, {}, "_ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm"},
     {6, NULL, NULL, {}, {}, "_ZNK17lib_a_cpp_class_b20usec_sleep_reentrantEm"},
+    {7, NULL, NULL, {}, {}, "lib_c_func_a"},
     {0, NULL, NULL, {}, {}, ""}
 };
 //
@@ -618,7 +618,6 @@ static void* jump_or_return_address_scratch_pad;
 //
 // keep it always even!!!
 //
-#define ISR_LIKE_STATE_LENGTH (10 * 8)
 #define ISR_LIKE_SAVE_STATE \
     asm volatile ( \
         "\tpush %%rdi\n" \
@@ -646,7 +645,6 @@ static void* jump_or_return_address_scratch_pad;
         "\tpop %%rsi\n" \
         "\tpop %%rdi\n" \
         : \
-        : "i" (ISR_LIKE_STATE_LENGTH) \
     )
 FILE* csv;
 //------------------------------------------------------------------------------
@@ -664,6 +662,12 @@ void __attribute__ ((constructor)) setup_lib_a_ld_preload()
     csv = fopen(csv_path, "w");
 }
 //------------------------------------------------------------------------------
+void __attribute__((destructor)) teardown_lib_a_ld_preload()
+{
+    fflush(csv);
+    fclose(csv);
+}
+//------------------------------------------------------------------------------
 //
 // Possible regex to list the C++ functions:
 // > objdump -T ~/bin/lib_a_bin/liblib_a_cpp.so | rg -e '(?-u) g    DF .text\t'
@@ -673,6 +677,26 @@ void __attribute__ ((constructor)) setup_lib_a_ld_preload()
 // the context is preserved with the return addres and the frame pointer.
 // the stack is kept untouched to allow the transparent interception.
 //
+int dl_iterate_phdr_callback(struct dl_phdr_info *info, size_t size, void *data)
+{
+    int result = 0;
+    void *candidate_lib_handler = dlopen(info->dlpi_name, RTLD_NOW);
+    if (NULL != candidate_lib_handler) {
+        void *candidate_func_ptr = dlsym(candidate_lib_handler, other_fpi->function_name);
+        if (NULL != candidate_func_ptr) {
+            if (data != candidate_func_ptr) {
+                //
+                // Found a runtime loaded library which implements the
+                // intercepted function.
+                //
+                other_fpi->function_target = candidate_func_ptr;
+                result = 1;
+            }
+        }
+        dlclose(candidate_lib_handler);
+    }
+    return result;
+}
 void function_interceptor()
 {
     //
@@ -681,6 +705,25 @@ void function_interceptor()
     //
     // check if there is no other active call
     //
+    //
+    // When a library is loaded at runtime using `dlopen` the call to
+    // `dlsym(RTLD_NEXT, ...)` returns NULL.
+    //
+    if (NULL == other_fpi->function_target) {
+        //
+        // Ensures RSP is 16 byte aligned.
+        //
+        asm (
+            "\tmov $0x0,%%rbx\n"
+            "\tmov $0x8,%%rcx\n"
+            "\tmov %%rsp,%%rax\n"
+            "\tand $0x0F,%%rax\n"
+            "\tcmovnz %%rcx,%%rbx\n"
+            "\tsub %%rbx,%%rsp\n"
+            :
+        );
+        dl_iterate_phdr(dl_iterate_phdr_callback, dlsym(RTLD_DEFAULT, other_fpi->function_name));
+    }
     if (NULL != active_fpi) {
         //
         // reentrant call
@@ -710,13 +753,13 @@ void function_interceptor()
     // this code supports single threaded processes only.
     //
     asm volatile (
-        "\tmov %%rbp,%%rax\n"
-        "\tmov (%%rax),%%rax\n"
+        "\tmov (%%rbp),%%rax\n"
         "\tmov 8(%%rax),%0\n" // saves the original return adddress.
         : "=p" (jump_or_return_address_scratch_pad)
     );
     active_fpi->actual_return_address = jump_or_return_address_scratch_pad;
     clock_gettime(CLOCK_REALTIME, &(active_fpi->last_entry_ts));
+    jump_or_return_address_scratch_pad = active_fpi->function_target;
     //
     // needs to discard the dangling frame pointer because arrived here through jump.
     //
@@ -735,7 +778,7 @@ void function_interceptor()
         "\tadd $8,%%rsp\n" // rewind the stack to the point where the original call was performed
         "\tcall *%0\n"     // calls the original function
         :
-        : "m" (active_fpi->function_target)
+        : "m" (jump_or_return_address_scratch_pad)
     );
     ISR_LIKE_SAVE_STATE;
     clock_gettime(CLOCK_REALTIME, &(active_fpi->last_exit_ts));
@@ -743,6 +786,14 @@ void function_interceptor()
         active_fpi->function_index,
         active_fpi->last_entry_ts.tv_sec, active_fpi->last_entry_ts.tv_nsec,
         active_fpi->last_exit_ts.tv_sec, active_fpi->last_exit_ts.tv_nsec);
+#if 0
+    //
+    // This line increased the overhead about 4 times.
+    // This also made the overhead for a call without reentrant calls slower
+    // than the call with reentrant calls, which is counter intuitive.
+    //
+    fflush(csv);
+#endif
     //
     // stop the profiling
     // active_fpi needs to be set back to NULL
@@ -777,31 +828,36 @@ void function_interceptor()
     )
 void lib_a_func_a()
 {
-    JUMP_TO_GENERIC_INTERCEPTOR(0);
+    JUMP_TO_GENERIC_INTERCEPTOR(1 - 1);
 }
 //------------------------------------------------------------------------------
 void lib_a_func_b()
 {
-    JUMP_TO_GENERIC_INTERCEPTOR(1);
+    JUMP_TO_GENERIC_INTERCEPTOR(2 - 1);
 }
 //------------------------------------------------------------------------------
 void lib_a_func_c()
 {
-    JUMP_TO_GENERIC_INTERCEPTOR(2);
+    JUMP_TO_GENERIC_INTERCEPTOR(3 - 1);
 }
 //------------------------------------------------------------------------------
 void lib_a_func_d()
 {
-    JUMP_TO_GENERIC_INTERCEPTOR(3);
+    JUMP_TO_GENERIC_INTERCEPTOR(4 - 1);
 }
 //------------------------------------------------------------------------------
 void _ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm()
 {
-    JUMP_TO_GENERIC_INTERCEPTOR(4);
+    JUMP_TO_GENERIC_INTERCEPTOR(5 - 1);
 }
 //------------------------------------------------------------------------------
 void _ZNK17lib_a_cpp_class_b20usec_sleep_reentrantEm()
 {
-    JUMP_TO_GENERIC_INTERCEPTOR(5);
+    JUMP_TO_GENERIC_INTERCEPTOR(6 - 1);
+}
+//------------------------------------------------------------------------------
+void lib_c_func_a()
+{
+    JUMP_TO_GENERIC_INTERCEPTOR(7 - 1);
 }
 //------------------------------------------------------------------------------
