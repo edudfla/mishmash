@@ -762,7 +762,6 @@ void function_interceptor()
         : "=p" (jump_or_return_address_scratch_pad)
     );
     active_fpi->actual_return_address = jump_or_return_address_scratch_pad;
-    clock_gettime(CLOCK_REALTIME, &(active_fpi->last_entry_ts));
     jump_or_return_address_scratch_pad = active_fpi->function_target;
     //
     // needs to discard the dangling frame pointer because arrived here through jump.
@@ -772,6 +771,7 @@ void function_interceptor()
         "\tpop %%rbp\n"
         :
     );
+    clock_gettime(CLOCK_REALTIME, &(active_fpi->last_entry_ts));
     ISR_LIKE_RESTORE_STATE;
     asm volatile (
         "\tmov %%rbp,%%rsp\n"
