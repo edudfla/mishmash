@@ -712,16 +712,20 @@ void function_interceptor()
     if (NULL == other_fpi->function_target) {
         //
         // Ensures RSP is 16 byte aligned.
+        // It was seen in practice that if the content of RSP is not an
+        // integer multiple of 16 before calling dl_iterate_phdr, a "SIGSEGV"
+        // (address boundary error) excetption is thrown.
         //
-        asm (
-            "\tmov $0x0,%%rbx\n"
-            "\tmov $0x8,%%rcx\n"
-            "\tmov %%rsp,%%rax\n"
-            "\tand $0x0F,%%rax\n"
-            "\tcmovnz %%rcx,%%rbx\n"
-            "\tsub %%rbx,%%rsp\n"
+        asm volatile goto (
+            "\ttest $0xF,%%rsp\n"
+            "\tjz %l[rsp_content_is_integer_multiple_of_16]\n"
+            "\tsub $0x8,%%rsp\n"
             :
+            :
+            :
+            : rsp_content_is_integer_multiple_of_16
         );
+        rsp_content_is_integer_multiple_of_16:;
         dl_iterate_phdr(dl_iterate_phdr_callback, dlsym(RTLD_DEFAULT, other_fpi->function_name));
     }
     if (NULL != active_fpi) {
