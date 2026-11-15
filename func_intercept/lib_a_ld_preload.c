@@ -719,7 +719,7 @@ void function_interceptor()
         asm volatile goto (
             "\ttest $0xF,%%rsp\n"
             "\tjz %l[rsp_content_is_integer_multiple_of_16]\n"
-            "\tsub $0x8,%%rsp\n"
+            "\tpush $0x0\n"
             :
             :
             :
