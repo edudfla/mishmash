@@ -40,7 +40,6 @@ typedef struct {
     pthread_t thread_self;
     int function_index;
     void *actual_return_address;
-    void *rbp_on_entry;
     struct timespec last_entry_ts;
     FILE *csv;
 } thread_profiler_t;
@@ -190,8 +189,30 @@ static thread_profiler_t* find_thread_context(void)
 //
 // Inspired in SAVE_ARGS_IRQ
 //
+// The one or two extra pushes of rbp have two purposes:
+//   1. keeps the value in rsp as a multiple integer of 16 (so always an even
+//      number of push operations). This is because many system library calls
+//      require the alignment of rsp as integer multiple of 16. If the rsp is
+//      not an integer multiple of 16 a SIGSEGV (Address boundary error) may
+//      be issued. Those extra elements are not removed by the counterpart
+//      macro ISR_LIKE_RESTORE_STATE. Those extra pushed rbp need to be
+//      removed on a case by case basis.
+//   2. reserve an extra slot in the stack to store the jump address. All the
+//      jumps are done through instruction ret to avoid touching any register
+//      after restoring the register and before doing the jump (the ret instruction
+//      allows to store the destination address in the stack).
+//
+#define ISR_LIKE_SIZE_WITH_EXTRA (16*8)
+#define ISR_LIKE_SIZE_WITHOUT_EXTRA (14*8)
+#define ISR_LIKE_DISCARD_EXTRA_1 "\tadd $0x8,%%rsp\n"
+#define ISR_LIKE_DISCARD_EXTRA_2 "\tadd $0x10,%%rsp\n"
+#define ISR_LIKE_POP_EXTRA \
+    "\tpop %%rbp\n" \
+    "\tpop %%rbp\n"
 #define ISR_LIKE_SAVE_STATE \
     asm volatile ( \
+        "\tpush %%rbp\n" \
+        "\tpush %%rbp\n" \
         "\tpush %%rdi\n" \
         "\tpush %%rsi\n" \
         "\tpush %%rdx\n" \
@@ -210,7 +231,7 @@ static thread_profiler_t* find_thread_context(void)
     )
 //
 // Undo the ISR_LIKE_SAVE_STATE plus:
-// 1. 
+//
 #define ISR_LIKE_RESTORE_STATE \
     asm volatile ( \
         "\tpop %%r15\n" \
@@ -227,7 +248,6 @@ static thread_profiler_t* find_thread_context(void)
         "\tpop %%rdx\n" \
         "\tpop %%rsi\n" \
         "\tpop %%rdi\n" \
-        "\tpop %%rbp\n" \
         : \
     )
 //------------------------------------------------------------------------------
@@ -268,15 +288,26 @@ int dl_iterate_phdr_callback(struct dl_phdr_info *info, size_t size, void *data)
 void profiler_epilogue();
 static void profiler_prologue(int function_index)
 {
+    //
+    // This function runs in the context of the callee.
+    // It has two stack frames though.
+    // The first stack frame is of the function which is intercepting the
+    // actual target function.
+    // The second stack frame if for this function.
+    // Both stack frames shall be discarded before jumping to the actual
+    // target function.
+    //
     thread_profiler_t *p_t = find_thread_context();
     intercepted_function_t *i_f = &(intercepted_functions[function_index - 1]);
     if(NULL == i_f->function_target) {
         //
+        #ifdef ENFORCE_STACK_POINTER_ALIGNMENT
         // Ensures RSP is 16 byte aligned.
         // It was seen in practice that if the content of RSP is not an
         // integer multiple of 16 before calling dl_iterate_phdr, a "SIGSEGV"
         // (address boundary error) excetption is thrown.
         //
+        int restore_rsp = 0;
         asm volatile goto (
             "\ttest $0xF,%%rsp\n"
             "\tjz %l[rsp_content_is_integer_multiple_of_16]\n"
@@ -286,31 +317,55 @@ static void profiler_prologue(int function_index)
             :
             : rsp_content_is_integer_multiple_of_16
         );
+        restore_rsp = 1;
+        #endif
         rsp_content_is_integer_multiple_of_16:;
         dl_iterate_phdr_callback_data_t d_i_p_c_d;
         d_i_p_c_d.i_f = i_f;
         d_i_p_c_d.n_t_f_t = dlsym(RTLD_DEFAULT, i_f->function_name);
         dl_iterate_phdr(dl_iterate_phdr_callback, &d_i_p_c_d);
+        #ifdef ENFORCE_STACK_POINTER_ALIGNMENT
+        if(1 == restore_rsp) {
+            asm volatile (
+                "\tpop %%rax\n"
+                :
+            );
+        }
+        #endif
     }
     //
     // Checks if there is no other active call.
     // 
     if (0 != p_t->function_index) {
         //
-        // reentrant call
+        // Reentrant call.
+        // It may be that the caller doesn't care about rbp.
+        // It may be that the caler does care about rbp.
+        // So the original rbp must be restored before calling the actual
+        // function.
         //
+        void *r0 = i_f->function_target;
         asm volatile (
-            "\tmov (%%rbp),%%rax\n" // Top of the stack on profiler_prologue entry.
-            "\tmov (%%rax),%%rax\n" // Top of the stack on intercepted function entry.
-            "\tmov %0,(%%rax)\n"    // Overwrites the backup of rbp on intercepted function entry.
+            "\tmov (%%rbp),%%rbx\n" // Top of the stack on intercepted function entry.
+            "\tmov (%%rbx),%%rcx\n"
+            "\tmov %%rcx,-8(%%rbx)\n"   // Moves the saved rbp from the caller.
+            "\tmov %0,(%%rbx)\n"    // Sets the address to jump as the actuall invoked function.
                                     // This will allow the use of ret do call the original function.
+                                    // Notice that the space being used here is one of the extras.
             :
-            : "r" (i_f->function_target)
+            : "r" (r0)
+        );
+        asm volatile (
+            "\tmov %%rbp,%%rsp\n"   // Unwinds the stack to the what the actual function would
+                                    // see if the actuall function was invoked directly.
+            "\tsub %0,%%rsp\n"      // Positions in the point where the backup of the registers are.
+            :
+            : "n" (ISR_LIKE_SIZE_WITH_EXTRA)
         );
         ISR_LIKE_RESTORE_STATE;     // Restore the register values
         asm volatile (
-            "\tmov (%%rbp),%%rsp\n" // Unwind the stack to the what the actual function would
-            "\tmov (%%rsp),%%rsp\n" // see if the actuall function was invoked directly.
+            ISR_LIKE_DISCARD_EXTRA_1
+            "\tpop %%rbp\n"
             "\tret\n"               // A jmp disguised as a ret.
                                     // This goes to the original function.
             :
@@ -329,32 +384,132 @@ static void profiler_prologue(int function_index)
     //    The usage if ret, although misleading, allows the jump without the need
     //    to touch any register before the jump.
     //
+    void *r0;
+    void *r1;
     asm volatile (
-        "\tmov (%%rbp),%%rax\n"
-        "\tmov (%%rax),%%rax\n"
-        "\tmov 8(%%rax),%0\n"   // Saves original call return address.
-        "\tmov (%%rax),%1\n"    // Saves original call rbp.
-        "\tmov %2,8(%%rax)\n"   // Sets new return address to profiler_epilogue.
-        "\tmov %3,(%%rax)\n"    // Sets destination to the actuall function being intercepted
-                                // (uses ret to jump to it)
-        : "=r" (p_t->actual_return_address)
-        , "=r" (p_t->rbp_on_entry)
-        : "p" (profiler_epilogue)
-        , "r" (i_f->function_target)
+        "\tmov (%%rbp),%%rbx\n"
+        "\tmov 8(%%rbx),%0\n"   // Saves original call return address.
+        : "=r" (r0)
+    );
+    p_t->actual_return_address = r0;
+    r0 = profiler_epilogue;
+    r1 = i_f->function_target;
+    asm volatile (
+        "\tmov (%%rbp),%%rbx\n"
+        "\tmov %0,8(%%rbx)\n"   // Sets new return address to profiler_epilogue.
+        "\tmov (%%rbx),%%rcx\n" // Moves the pushed rbp one position down.
+        "\tmov %%rcx,-8(%%rbx)\n"
+        "\tmov %1,(%%rbx)\n"    // Sets destination to the actuall function being intercepted
+                                // (uses ret to jump to it). Overwrites originally saved rbp.
+        :
+        : "r" (r0)
+        , "r" (r1)
     );
     clock_gettime(CLOCK_REALTIME, &(p_t->last_entry_ts));
+    asm volatile (
+        "\tmov (%%rbp),%%rsp\n" // Unwinds the stack to the what the actual function would
+                                // see if the actual function was invoked directly.
+        "\tsub %0,%%rsp\n"      // Positions in the point where the backup of the registers are.
+        :
+        : "n" (ISR_LIKE_SIZE_WITH_EXTRA)
+    );
     ISR_LIKE_RESTORE_STATE;     // Restore the register values
     asm volatile (
-        "\tmov (%%rbp),%%rsp\n" // Unwind the stack to the what the actual function would
-        "\tmov (%%rsp),%%rsp\n" // see if the actuall function was invoked directly.
+        ISR_LIKE_DISCARD_EXTRA_1
+        "\npop %%rbp\n"
         "\tret\n"               // A jmp disguised as a ret.
                                 // This goes to the original function.
         :
     );
+#if 0
+    1. main calls object_a->usec_sleep_inline
+        rsp -= 8;
+        *rsp = next line in main
+    2. _ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm
+        rsp -= 8;
+        *rsp = rbp;
+        rbp = rsp;
+        rsp -= 8 x 14; // isr save state
+        rsp -= 8;
+        *rsp = next line in _ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm
+    3. profiler_prologue
+        rsp -= 8;
+        *rsp = rbp;
+        rbp = rsp; //
+
+rbp     *rbp
+0 +0      rsp on entry in profiler_prologue
+1 +8      return address to _ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm
+2 +16     backup r15
+3 +24     backup r14
+4 +32     backup r13
+5 +40     backup r12
+6 +48     backup r11
+7 +56     backup r10
+8 +64     backup r9
+9 +72     backup r8
+10 +80     backup rax
+11 +88     backup rbx
+12 +96     backup rcx
+13 +104    backup rdx
+14 +112    backup rsi
+15 +120    backup rdi
+16 +128    return address to next line in main
+17 +136    rsp on entry in 
+
+disassemble *(uint64_t*)($rbp+8) - ok (_ZNK17lib_a_cpp_class_b17usec_sleep_inlineEm)
+disassemble *(uint64_t*)($rbp+128) - ok (main)
+disassemble *(uint64_t*)(*(uint64_t*)($rbp)) - ok??? (main)
+
+disassemble *(uint64_t*)(*(uint64_t*)($rbp) + 8) -ok (main)
+#endif
 }
 //------------------------------------------------------------------------------
+#define ISR_LIKE_SAVE_STATE_EPILOGUE \
+    asm volatile ( \
+        "\tpush %%rdi\n" \
+        "\tpush %%rsi\n" \
+        "\tpush %%rdx\n" \
+        "\tpush %%rcx\n" \
+        "\tpush %%rbx\n" \
+        "\tpush %%rax\n" \
+        "\tpush %%r8\n" \
+        "\tpush %%r9\n" \
+        "\tpush %%r10\n" \
+        "\tpush %%r11\n" \
+        "\tpush %%r12\n" \
+        "\tpush %%r13\n" \
+        "\tpush %%r14\n" \
+        "\tpush %%r15\n" \
+        : \
+    )
+#define ISR_LIKE_RESTORE_STATE_EPILOGUE \
+    asm volatile ( \
+        "\tpop %%r15\n" \
+        "\tpop %%r14\n" \
+        "\tpop %%r13\n" \
+        "\tpop %%r12\n" \
+        "\tpop %%r11\n" \
+        "\tpop %%r10\n" \
+        "\tpop %%r9\n" \
+        "\tpop %%r8\n" \
+        "\tpop %%rax\n" \
+        "\tpop %%rbx\n" \
+        "\tpop %%rcx\n" \
+        "\tpop %%rdx\n" \
+        "\tpop %%rsi\n" \
+        "\tpop %%rdi\n" \
+        : \
+    )
 void profiler_epilogue()
 {
+    //
+    // This is as if it runs in the context of the caller.
+    // Reaches here through a return instruction.
+    // Still has the frame pointer decoration.
+    // RSP diverges from RBP because of the local variables.
+    // The restore sequence differs from profiler_prologue.
+    //
     ISR_LIKE_SAVE_STATE;
     struct timespec last_exit_ts;
     clock_gettime(CLOCK_REALTIME, &last_exit_ts);
@@ -363,20 +518,15 @@ void profiler_epilogue()
         p_t->function_index,
         p_t->last_entry_ts.tv_sec, p_t->last_entry_ts.tv_nsec,
         last_exit_ts.tv_sec, last_exit_ts.tv_nsec);
+    fflush(p_t->csv);
+    auto r0 = p_t->actual_return_address;
     asm volatile (
-        "\tmov (%%rbp),%%rax\n"
-        "\tmov (%%rax),%%rax\n"
-        "\tmov %0,8(%%rax)\n"
-        "\tmov %1,(%%rax)\n"
-        "\tret\n"
+        "\tmov %0,8(%%rbp)\n"   // Restores original call return address.
         :
-        : "r" (p_t->actual_return_address)
-        , "r" (p_t->rbp_on_entry)
+        : "p" (r0)
     );
     ISR_LIKE_RESTORE_STATE;     // Restore the register values
     asm volatile (
-        "\tmov (%%rbp),%%rsp\n" // Unwind the stack to the what the actual function would
-        "\tmov (%%rsp),%%rsp\n" // see if the actuall function was invoked directly.
         "\tret\n"               // A jmp disguised as a ret.
                                 // This goes to the original function.
         :

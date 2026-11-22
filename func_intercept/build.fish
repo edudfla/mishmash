@@ -21,4 +21,5 @@ g++ $exe_flags main.cpp -o $dest_dir/main_cpp -llib_a -llib_a_cpp -L$dest_dir
 #echo F
 gcc $lib_flags lib_c.c -o $dest_dir/liblib_c.so
 gcc $exe_flags main_runtime_dlopen.c -o $dest_dir/main_runtime_dlopen
+gcc $lib_flags profiler.c -lpthread -o $dest_dir/libprofiler.so
 popd
