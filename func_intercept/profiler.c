@@ -347,6 +347,7 @@ static void profiler_prologue(int function_index)
         void *r0 = i_f->function_target;
         asm volatile (
             "\tmov (%%rbp),%%rbx\n" // Top of the stack on intercepted function entry.
+
             "\tmov (%%rbx),%%rcx\n"
             "\tmov %%rcx,-8(%%rbx)\n"   // Moves the saved rbp from the caller.
             "\tmov %0,(%%rbx)\n"    // Sets the address to jump as the actuall invoked function.
@@ -355,8 +356,9 @@ static void profiler_prologue(int function_index)
             :
             : "r" (r0)
         );
+
         asm volatile (
-            "\tmov %%rbp,%%rsp\n"   // Unwinds the stack to the what the actual function would
+            "\tmov (%%rbp),%%rsp\n" // Unwinds the stack to the what the actual function would
                                     // see if the actuall function was invoked directly.
             "\tsub %0,%%rsp\n"      // Positions in the point where the backup of the registers are.
             :
@@ -511,10 +513,24 @@ void profiler_epilogue_0()
         p_t->last_entry_ts.tv_sec, p_t->last_entry_ts.tv_nsec,
         last_exit_ts.tv_sec, last_exit_ts.tv_nsec);
     fflush(p_t->csv);
+    //
+    // This thread context is "unlocked" (reentrant call detection mechanism).
+    //
+    p_t->function_index = 0;
     void *r0 = p_t->actual_return_address;
+    //
+    // The frame pointer of profiler_epilogue is incomplete.
+    // That is because profiler_epilogue is injected as a return address.
+    // Then it reaches to profiler_epilogue with a ret.
+    // Therefore the caller return address is not pushed to the stack.
+    // Hence the absence of the usual offset "8(%%rbx)".
+    // To avoid loss the rbp needs to be moved downwards first.
+    //
     asm volatile (
         "\tmov (%%rbp),%%rbx\n"
-        "\tmov %0,8(%%rbx)\n"   // Restores original call return address.
+        "\tmov (%%rbx),%%rcx\n"
+        "\tmov %%rcx,-8(%%rbx)\n"
+        "\tmov %0,(%%rbx)\n"    // Restores original call return address.
         :
         : "r" (r0)
     );
@@ -528,7 +544,7 @@ void profiler_epilogue()
     // RSP diverges from RBP because of the local variables.
     // The restore sequence differs from profiler_prologue.
     //
-    ISR_LIKE_SAVE_STATE_EPILOGUE;
+    ISR_LIKE_SAVE_STATE;
     //
     // The original body of the function was partially moved to a separate
     // function to ensure predictability for the stack.
@@ -537,7 +553,11 @@ void profiler_epilogue()
     // measurement and larger overhead.
     //
     profiler_epilogue_0();
-    ISR_LIKE_RESTORE_STATE_EPILOGUE;    // Restore the register values
+    ISR_LIKE_RESTORE_STATE;    // Restore the register values
+    asm volatile (
+        ISR_LIKE_DISCARD_EXTRA_1
+        :
+    );
     //
     // Nothing necessary here.
     // GCC will automatically add the required code:
