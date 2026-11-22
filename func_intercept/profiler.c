@@ -501,6 +501,24 @@ disassemble *(uint64_t*)(*(uint64_t*)($rbp) + 8) -ok (main)
         "\tpop %%rdi\n" \
         : \
     )
+void profiler_epilogue_0()
+{
+    struct timespec last_exit_ts;
+    clock_gettime(CLOCK_REALTIME, &last_exit_ts);
+    thread_profiler_t *p_t = find_thread_context();
+    fprintf(p_t->csv, "%d,%lu%09lu,%lu%09lu\n",
+        p_t->function_index,
+        p_t->last_entry_ts.tv_sec, p_t->last_entry_ts.tv_nsec,
+        last_exit_ts.tv_sec, last_exit_ts.tv_nsec);
+    fflush(p_t->csv);
+    void *r0 = p_t->actual_return_address;
+    asm volatile (
+        "\tmov (%%rbp),%%rbx\n"
+        "\tmov %0,8(%%rbx)\n"   // Restores original call return address.
+        :
+        : "r" (r0)
+    );
+}
 void profiler_epilogue()
 {
     //
@@ -510,27 +528,21 @@ void profiler_epilogue()
     // RSP diverges from RBP because of the local variables.
     // The restore sequence differs from profiler_prologue.
     //
-    ISR_LIKE_SAVE_STATE;
-    struct timespec last_exit_ts;
-    clock_gettime(CLOCK_REALTIME, &last_exit_ts);
-    thread_profiler_t *p_t = find_thread_context();
-    fprintf(p_t->csv, "%d,%lu%09lu,%lu%09lu\n",
-        p_t->function_index,
-        p_t->last_entry_ts.tv_sec, p_t->last_entry_ts.tv_nsec,
-        last_exit_ts.tv_sec, last_exit_ts.tv_nsec);
-    fflush(p_t->csv);
-    auto r0 = p_t->actual_return_address;
-    asm volatile (
-        "\tmov %0,8(%%rbp)\n"   // Restores original call return address.
-        :
-        : "p" (r0)
-    );
-    ISR_LIKE_RESTORE_STATE;     // Restore the register values
-    asm volatile (
-        "\tret\n"               // A jmp disguised as a ret.
-                                // This goes to the original function.
-        :
-    );
+    ISR_LIKE_SAVE_STATE_EPILOGUE;
+    //
+    // The original body of the function was partially moved to a separate
+    // function to ensure predictability for the stack.
+    // Looking to the disassembled code, it seems that the techique worked.
+    // The trade off is larger error with respect to the accuracy of the time
+    // measurement and larger overhead.
+    //
+    profiler_epilogue_0();
+    ISR_LIKE_RESTORE_STATE_EPILOGUE;    // Restore the register values
+    //
+    // Nothing necessary here.
+    // GCC will automatically add the required code:
+    // pop %rbp
+    // ret
 }
 
 //------------------------------------------------------------------------------

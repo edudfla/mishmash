@@ -13,7 +13,8 @@ trap "rm $gdb_commands" EXIT INT QUIT TERM
 echo '
 set breakpoint pending on
 set disassemble-next-line on
-break profiler.c:417
+break main.cpp:75
+break profiler.c:531
 display /x $rsp
 display /x $rbp
 display /x *(uint64_t*)($rsp-40)
