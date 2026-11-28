@@ -95,3 +95,32 @@ int main()
     return 0;
 }
 ```
+
+## A second example for the gallery of "SIGSEGV (Address boundary error)"
+`strtok` expects the first parameter to be a writable string.
+When a constant string is passed as the first parameter to `strtok` it fails with the error.
+
+Assuming that the following code is saved in file `/tmp/tmp.c` the example can be checked by executing \
+`gcc -DSIGSEGV_Addess_boundary_error /tmp/tmp.c -o /tmp/tmp; and /tmp/tmp`.
+
+```c
+#include <string.h>
+#include <stddef.h>
+#include <stdio.h>
+int main()
+{
+#if defined SIGSEGV_Addess_boundary_error
+    char *s = "1,2,3,4";
+#else
+    char s[16];
+    strcpy(s, "1,2,3,4");
+#endif
+    char *p;
+    if(p = strtok(s, ",")) {
+        do {
+            printf("%s\n", p);
+        } while(p = strtok(NULL, ","));
+    }
+    return 0;
+}
+```
